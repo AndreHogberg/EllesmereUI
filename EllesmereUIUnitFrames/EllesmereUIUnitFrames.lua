@@ -1918,12 +1918,21 @@ local function CreatePortrait(frame, side, frameHeight, unit)
         backdrop:SetFrameLevel(frame:GetFrameLevel() + 15)
     end
 
-    -- Always create 2D, 3D, and class theme textures; only show the active one.
-    local model3D = CreateFrame("PlayerModel", nil, backdrop)
-    PP.Point(model3D, "TOPLEFT", backdrop, "TOPLEFT", 0, 0)
-    PP.Point(model3D, "BOTTOMRIGHT", backdrop, "BOTTOMRIGHT", 0, 0)
-    model3D:SetCamera(0)
-    model3D:Hide()
+    -- Create 2D and class theme textures eagerly; 3D PlayerModel is deferred
+    -- until actually needed (mode == "3d") to avoid GPU/memory cost when unused.
+    local model3D = nil  -- lazy-created only when mode is "3d"
+
+    local function EnsureModel3D()
+        if model3D then return model3D end
+        model3D = CreateFrame("PlayerModel", nil, backdrop)
+        PP.Point(model3D, "TOPLEFT", backdrop, "TOPLEFT", 0, 0)
+        PP.Point(model3D, "BOTTOMRIGHT", backdrop, "BOTTOMRIGHT", 0, 0)
+        model3D:SetCamera(0)
+        model3D:Hide()
+        backdrop._3d = model3D
+        return model3D
+    end
+    backdrop._ensureModel3D = EnsureModel3D
 
     local tex2D = backdrop:CreateTexture(nil, "ARTWORK")
     PP.Point(tex2D, "TOPLEFT", backdrop, "TOPLEFT", 0, 0)
@@ -1974,8 +1983,9 @@ local function CreatePortrait(frame, side, frameHeight, unit)
         active = tex2D
         active.is2D = true
     else
-        model3D:Show()
-        active = model3D
+        local m3d = EnsureModel3D()
+        m3d:Show()
+        active = m3d
         active.is2D = false
     end
     active.backdrop = backdrop
@@ -3317,11 +3327,13 @@ end
 
 -- Swap portrait mode (3D / 2D / class theme) without recreating frames.
 -- All three objects already exist on the backdrop; we just show/hide and reassign frame.Portrait.
+-- Swap portrait mode (3D / 2D / class theme) without recreating frames.
+-- 2D and class textures exist on the backdrop; 3D PlayerModel is lazy-created on first use.
 local function SwapPortraitMode(frame)
     local portrait = frame.Portrait
     if not portrait or not portrait.backdrop then return end
     local bd = portrait.backdrop
-    if not bd._2d or not bd._3d then return end
+    if not bd._2d then return end
 
     local wantMode
     do
@@ -3350,8 +3362,7 @@ local function SwapPortraitMode(frame)
     end
 
     -- Hide all
-    bd._3d:ClearModel()
-    bd._3d:Hide()
+    if bd._3d then bd._3d:ClearModel(); bd._3d:Hide() end
     bd._2d:Hide()
     if bd._class then bd._class:Hide() end
 
@@ -3366,6 +3377,9 @@ local function SwapPortraitMode(frame)
         -- Class theme is static -- no oUF element needed, skip re-enable
         return
     elseif wantMode == "3d" then
+        -- Lazily create the PlayerModel on first switch to 3D
+        if bd._ensureModel3D then bd._ensureModel3D() end
+        if not bd._3d then return end
         bd._3d:Show()
         bd._3d.backdrop = bd
         bd._3d.is2D = false

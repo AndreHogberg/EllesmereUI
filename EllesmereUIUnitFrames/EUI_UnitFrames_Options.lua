@@ -853,13 +853,20 @@ initFrame:SetScript("OnEvent", function(self)
             portraitTex:SetTexCoord(0.15, 0.85, 0.15, 0.85)
             UnsnapTex(portraitTex)
 
-            -- 3D model for preview (uses player model for all unit previews)
-            local portraitModel = CreateFrame("PlayerModel", nil, portraitFrame)
-            portraitModel:SetPoint("TOPLEFT", portraitFrame, "TOPLEFT", 0, 0)
-            portraitModel:SetPoint("BOTTOMRIGHT", portraitFrame, "BOTTOMRIGHT", 0, 0)
-            portraitModel:SetUnit("player")
-            portraitModel:SetCamera(0)
-            portraitModel:Hide()
+            -- 3D model for preview (lazy-created only when mode is "3d")
+            local portraitModel = nil
+
+            local function EnsurePreviewModel()
+                if portraitModel then return portraitModel end
+                portraitModel = CreateFrame("PlayerModel", nil, portraitFrame)
+                portraitModel:SetPoint("TOPLEFT", portraitFrame, "TOPLEFT", 0, 0)
+                portraitModel:SetPoint("BOTTOMRIGHT", portraitFrame, "BOTTOMRIGHT", 0, 0)
+                portraitModel:SetUnit("player")
+                portraitModel:SetCamera(0)
+                portraitModel:Hide()
+                portraitFrame._previewModel = portraitModel
+                return portraitModel
+            end
 
             local function ApplyPortraitMode()
                 -- Read settings fresh from DB so the closure never goes stale
@@ -876,12 +883,13 @@ initFrame:SetScript("OnEvent", function(self)
                 if mode == "3d" then
                     portraitFrame:Show()
                     portraitTex:Hide()
-                    portraitModel:SetUnit("player")
-                    portraitModel:SetCamera(0)
-                    portraitModel:Show()
+                    local pm = EnsurePreviewModel()
+                    pm:SetUnit("player")
+                    pm:SetCamera(0)
+                    pm:Show()
                 elseif mode == "class" then
                     portraitFrame:Show()
-                    portraitModel:Hide()
+                    if portraitModel then portraitModel:Hide() end
                     portraitTex:Show()
                     local _, ct = UnitClass("player")
                     local cts = curSettings.classThemeStyle or "modern"
@@ -897,7 +905,7 @@ initFrame:SetScript("OnEvent", function(self)
                     PP.Point(portraitTex, "BOTTOMRIGHT", portraitFrame, "BOTTOMRIGHT", -inset, inset)
                 else
                     portraitFrame:Show()
-                    portraitModel:Hide()
+                    if portraitModel then portraitModel:Hide() end
                     portraitTex:Show()
                     SetPortraitTexture(portraitTex, "player")
                     portraitTex:SetTexCoord(0.15, 0.85, 0.15, 0.85)
