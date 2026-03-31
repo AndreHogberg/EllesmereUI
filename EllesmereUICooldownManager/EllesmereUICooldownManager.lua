@@ -77,6 +77,13 @@ local CDM_SHAPES = {
 ns.CDM_SHAPE_MASKS   = CDM_SHAPES.masks
 ns.CDM_SHAPE_BORDERS = CDM_SHAPES.borders
 ns.CDM_SHAPE_ZOOM_DEFAULTS = CDM_SHAPES.zoomDefaults
+
+local CDM_PRESS_TEXTURES = {
+    [1] = "Interface\\AddOns\\EllesmereUIActionBars\\Media\\highlight-2.png",
+    [2] = "Interface\\AddOns\\EllesmereUIActionBars\\Media\\highlight-3.png",
+    [3] = "Interface\\AddOns\\EllesmereUIActionBars\\Media\\highlight-4.png",
+    [5] = "Interface\\AddOns\\EllesmereUIActionBars\\Media\\highlight-2.png",
+}
 -- Forward declarations for glow helpers (defined later, used by consolidated helpers)
 local StartNativeGlow, StopNativeGlow
 
@@ -300,6 +307,9 @@ local DEFAULTS = {
                     showCooldownText = true, showTooltip = false, showKeybind = false,
                     keybindSize = 10, keybindOffsetX = 2, keybindOffsetY = -2,
                     keybindR = 1, keybindG = 1, keybindB = 1, keybindA = 0.9,
+                    pressOverlayType = 2, pressOverlayAlpha = 0.9,
+                    pressOverlayClassColor = false,
+                    pressOverlayR = 0.973, pressOverlayG = 0.839, pressOverlayB = 0.604,
                 },
                 {
                     key = "utility", name = "Utility", enabled = true,
@@ -318,6 +328,9 @@ local DEFAULTS = {
                     showCooldownText = true, showTooltip = false, showKeybind = false,
                     keybindSize = 10, keybindOffsetX = 2, keybindOffsetY = -2,
                     keybindR = 1, keybindG = 1, keybindB = 1, keybindA = 0.9,
+                    pressOverlayType = 2, pressOverlayAlpha = 0.9,
+                    pressOverlayClassColor = false,
+                    pressOverlayR = 0.973, pressOverlayG = 0.839, pressOverlayB = 0.604,
                 },
                 {
                     key = "buffs", name = "Buffs", enabled = true,
@@ -336,6 +349,9 @@ local DEFAULTS = {
                     showCooldownText = true, showTooltip = false, showKeybind = false,
                     keybindSize = 10, keybindOffsetX = 2, keybindOffsetY = -2,
                     keybindR = 1, keybindG = 1, keybindB = 1, keybindA = 0.9,
+                    pressOverlayType = 2, pressOverlayAlpha = 0.9,
+                    pressOverlayClassColor = false,
+                    pressOverlayR = 0.973, pressOverlayG = 0.839, pressOverlayB = 0.604,
                 },
             },
         },
@@ -1366,6 +1382,15 @@ local function SetBlizzCDMFont(fs, font, size, r, g, b)
     fs:SetFont(font, size, "OUTLINE")
     fs:SetShadowOffset(0, 0)
     if r then fs:SetTextColor(r, g, b) end
+end
+
+local function SetCDMSquareTexture(texture, texPath)
+    if not texture then return end
+    texture:SetAtlas(nil)
+    texture:SetTexture(texPath)
+    texture:SetTexCoord(0, 1, 0, 1)
+    texture:ClearAllPoints()
+    texture:SetAllPoints(texture:GetParent())
 end
 
 -- Blizzard CDM frame names
@@ -2672,6 +2697,7 @@ ApplyShapeToCDMIcon = function(icon, shape, barData)
     local tex = fd and fd.tex or icon._tex
     local cd = fd and fd.cooldown or icon._cooldown
     local bg = fd and fd.bg or icon._bg
+    local pressOv = fd and fd.pressOverlay or icon._pressOverlay
     local zoom = barData.iconZoom or 0.08
     local borderSz = barData.borderSize or 1
     local brdR = barData.borderR or 0
@@ -2690,6 +2716,7 @@ ApplyShapeToCDMIcon = function(icon, shape, barData)
             if tex then pcall(tex.RemoveMaskTexture, tex, mask) end
             if bg then pcall(bg.RemoveMaskTexture, bg, mask) end
             if cd then pcall(cd.RemoveMaskTexture, cd, mask) end
+            if pressOv then pcall(pressOv.RemoveMaskTexture, pressOv, mask) end
             mask:SetTexture(nil); mask:ClearAllPoints(); mask:SetSize(0.001, 0.001); mask:Hide()
         end
         if icon._shapeBorder then icon._shapeBorder:Hide() end
@@ -2748,10 +2775,12 @@ ApplyShapeToCDMIcon = function(icon, shape, barData)
     if tex then pcall(tex.RemoveMaskTexture, tex, mask) end
     if bg then pcall(bg.RemoveMaskTexture, bg, mask) end
     if cd then pcall(cd.RemoveMaskTexture, cd, mask) end
+    if pressOv then pcall(pressOv.RemoveMaskTexture, pressOv, mask) end
 
     -- Apply mask to icon texture and background
     if tex then tex:AddMaskTexture(mask) end
     if bg then bg:AddMaskTexture(mask) end
+    if pressOv then pressOv:AddMaskTexture(mask) end
 
     -- Expand icon beyond frame for shape
     local shapeOffset = CDM_SHAPES.iconExpandOffsets[shape] or 0
@@ -2856,6 +2885,7 @@ local function RefreshCDMIconAppearance(barKey)
         local cd = fd and fd.cooldown or icon._cooldown
         local bg = fd and fd.bg or icon._bg
         local glowOv = fd and fd.glowOverlay or icon._glowOverlay
+        local pressOv = fd and fd.pressOverlay or icon._pressOverlay
         local kbText = fd and fd.keybindText or icon._keybindText
         local txOverlay = fd and fd.textOverlay or icon._textOverlay
         -- Scale compensation: fonts render at the frame's native scale,
@@ -2937,6 +2967,41 @@ local function RefreshCDMIconAppearance(barKey)
             kbText:SetTextColor(barData.keybindR or 1, barData.keybindG or 1, barData.keybindB or 1, barData.keybindA or 0.9)
         end
 
+        if pressOv then
+            local pressType = barData.pressOverlayType
+            if pressType == nil then pressType = 2 end
+            pressType = tonumber(pressType) or 2
+
+            local pressAlpha = tonumber(barData.pressOverlayAlpha)
+            if not pressAlpha then pressAlpha = 0.9 end
+            if pressAlpha < 0 then pressAlpha = 0 elseif pressAlpha > 1 then pressAlpha = 1 end
+
+            local pr = barData.pressOverlayR or 0.973
+            local pg = barData.pressOverlayG or 0.839
+            local pb = barData.pressOverlayB or 0.604
+            if barData.pressOverlayClassColor then
+                local cc = _playerClass and RAID_CLASS_COLORS[_playerClass]
+                if cc then pr, pg, pb = cc.r, cc.g, cc.b end
+            end
+
+            if pressType <= 0 then
+                pressOv:SetTexture(nil)
+                pressOv:Hide()
+            elseif pressType <= 3 then
+                SetCDMSquareTexture(pressOv, CDM_PRESS_TEXTURES[pressType] or CDM_PRESS_TEXTURES[2])
+                pressOv:SetVertexColor(pr, pg, pb, pressAlpha)
+            elseif pressType == 4 then
+                SetCDMSquareTexture(pressOv, "Interface\\Buttons\\WHITE8X8")
+                pressOv:SetVertexColor(pr, pg, pb, 0.35 * pressAlpha)
+            elseif pressType == 5 then
+                SetCDMSquareTexture(pressOv, CDM_PRESS_TEXTURES[5])
+                pressOv:SetVertexColor(pr, pg, pb, pressAlpha)
+            else
+                SetCDMSquareTexture(pressOv, CDM_PRESS_TEXTURES[2])
+                pressOv:SetVertexColor(pr, pg, pb, pressAlpha)
+            end
+        end
+
         -- Apply custom shape (overrides border/zoom set above)
         local shape = barData.iconShape or "none"
         ApplyShapeToCDMIcon(icon, shape, barData)
@@ -2958,6 +3023,8 @@ local function RefreshCDMIconAppearance(barKey)
             if ifd then ifd.procGlowActive = false end
         end
     end
+
+    if ns.RefreshPressedOverlays then ns.RefreshPressedOverlays() end
 end
 ns.RefreshCDMIconAppearance = RefreshCDMIconAppearance
 
@@ -4646,6 +4713,21 @@ function ECME:CDMFinishSetup()
                 if bd.barVisibility == "mouseover" then
                     bd.barVisibility = "always"
                 end
+            end
+        end
+    end
+
+    -- Migrate: initialize press overlay settings for existing bars.
+    do
+        local p = self.db and self.db.profile
+        if p and p.cdmBars and p.cdmBars.bars then
+            for _, bd in ipairs(p.cdmBars.bars) do
+                if bd.pressOverlayType == nil then bd.pressOverlayType = 2 end
+                if bd.pressOverlayAlpha == nil then bd.pressOverlayAlpha = 0.9 end
+                if bd.pressOverlayClassColor == nil then bd.pressOverlayClassColor = false end
+                if bd.pressOverlayR == nil then bd.pressOverlayR = 0.973 end
+                if bd.pressOverlayG == nil then bd.pressOverlayG = 0.839 end
+                if bd.pressOverlayB == nil then bd.pressOverlayB = 0.604 end
             end
         end
     end

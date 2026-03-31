@@ -254,6 +254,248 @@ ns._spellRouteMap = _spellRouteMap
 ns._cdidRouteMap = _cdidRouteMap
 
 -------------------------------------------------------------------------------
+--  Pressed Action Tracking
+-------------------------------------------------------------------------------
+local _pressedActionSlots = {}
+local _pressedSpellCounts = {}
+local _actionMouseHooksInstalled = setmetatable({}, { __mode = "k" })
+local _actionPressHooksInstalled = false
+
+local ACTION_BUTTON_PREFIXES = {
+    "ActionButton",
+    "MultiBarBottomLeftButton",
+    "MultiBarBottomRightButton",
+    "MultiBarRightButton",
+    "MultiBarLeftButton",
+    "MultiBar5Button",
+    "MultiBar6Button",
+    "MultiBar7Button",
+}
+
+local MULTIBAR_FRAME_TO_PREFIX = {
+    MultiBarBottomLeft  = "MultiBarBottomLeftButton",
+    MultiBarBottomRight = "MultiBarBottomRightButton",
+    MultiBarRight       = "MultiBarRightButton",
+    MultiBarLeft        = "MultiBarLeftButton",
+    MultiBar5           = "MultiBar5Button",
+    MultiBar6           = "MultiBar6Button",
+    MultiBar7           = "MultiBar7Button",
+}
+
+local function BuildPressedSpellVariants(spellID)
+    if type(spellID) ~= "number" or spellID <= 0 then return nil end
+
+    local variants = {}
+    local function AddVariant(sid)
+        if type(sid) == "number" and sid > 0 then
+            variants[sid] = true
+        end
+    end
+
+    AddVariant(spellID)
+
+    local getBase = C_Spell and C_Spell.GetBaseSpell
+    local findOverride = C_SpellBook and C_SpellBook.FindSpellOverrideByID
+
+    local baseSID = getBase and getBase(spellID)
+    local overrideSID = findOverride and findOverride(spellID)
+    AddVariant(baseSID)
+    AddVariant(overrideSID)
+
+    if baseSID and baseSID ~= spellID then
+        AddVariant(findOverride and findOverride(baseSID))
+    end
+    if overrideSID and overrideSID ~= spellID then
+        AddVariant(getBase and getBase(overrideSID))
+    end
+
+    return variants
+end
+
+local function ResolveSpellIDFromActionSlot(slot)
+    slot = tonumber(slot)
+    if not slot or slot <= 0 then return nil end
+
+    local actionType, id = GetActionInfo(slot)
+    if actionType == "spell" then
+        return id
+    elseif actionType == "macro" and id then
+        local macroSpell = GetMacroSpell(id)
+        return macroSpell or ((type(id) == "number" and id > 0) and id or nil)
+    end
+
+    return nil
+end
+
+local function AddPressedSpell(spellID)
+    local variants = BuildPressedSpellVariants(spellID)
+    if not variants then return end
+    for sid in pairs(variants) do
+        _pressedSpellCounts[sid] = (_pressedSpellCounts[sid] or 0) + 1
+    end
+end
+
+local function RemovePressedSpell(spellID)
+    local variants = BuildPressedSpellVariants(spellID)
+    if not variants then return end
+    for sid in pairs(variants) do
+        local cur = _pressedSpellCounts[sid]
+        if cur then
+            cur = cur - 1
+            if cur > 0 then
+                _pressedSpellCounts[sid] = cur
+            else
+                _pressedSpellCounts[sid] = nil
+            end
+        end
+    end
+end
+
+local function ApplyPressedActionSlot(slot, isPressed)
+    slot = tonumber(slot)
+    if not slot or slot <= 0 then return end
+
+    local prevSpell = _pressedActionSlots[slot]
+    if prevSpell then
+        RemovePressedSpell(prevSpell)
+        _pressedActionSlots[slot] = nil
+    end
+
+    if isPressed then
+        local spellID = ResolveSpellIDFromActionSlot(slot)
+        if spellID then
+            _pressedActionSlots[slot] = spellID
+            AddPressedSpell(spellID)
+        end
+    end
+
+    if ns.RefreshPressedOverlays then ns.RefreshPressedOverlays() end
+end
+
+local function ClearPressedActionState()
+    if not next(_pressedActionSlots) and not next(_pressedSpellCounts) then return end
+    wipe(_pressedActionSlots)
+    wipe(_pressedSpellCounts)
+    if ns.RefreshPressedOverlays then ns.RefreshPressedOverlays() end
+end
+
+local function ResolveMultiActionButton(barName, buttonID)
+    local barFrame = type(barName) == "table" and barName or (type(barName) == "string" and _G[barName] or nil)
+    if barFrame and barFrame.actionButtons and barFrame.actionButtons[buttonID] then
+        return barFrame.actionButtons[buttonID]
+    end
+
+    if type(barName) == "string" then
+        local prefix = MULTIBAR_FRAME_TO_PREFIX[barName]
+        if prefix then
+            return _G[prefix .. tostring(buttonID)]
+        end
+    end
+end
+
+local function ApplyPressedOverlayState(frame, barData)
+    local fd = hookFrameData[frame]
+    local pressOverlay = fd and fd.pressOverlay or frame._pressOverlay
+    if not pressOverlay then return end
+
+    local pressType = barData and barData.pressOverlayType
+    if pressType == nil then pressType = 2 end
+    pressType = tonumber(pressType) or 2
+    if pressType <= 0 then
+        pressOverlay:Hide()
+        if fd then fd.pressOverlayActive = false end
+        return
+    end
+
+    local fc = _ecmeFC[frame]
+    local spellID = fc and fc.spellID
+    local isPressed = spellID and _pressedSpellCounts[spellID] and _pressedSpellCounts[spellID] > 0
+    if isPressed then
+        pressOverlay:Show()
+    else
+        pressOverlay:Hide()
+    end
+    if fd then fd.pressOverlayActive = isPressed and true or false end
+end
+
+function ns.RefreshPressedOverlays()
+    local p = ECME.db and ECME.db.profile
+    if not p or not p.cdmBars or not p.cdmBars.bars then return end
+
+    for _, barData in ipairs(p.cdmBars.bars) do
+        if barData.enabled then
+            local icons = cdmBarIcons[barData.key]
+            if icons then
+                for _, icon in ipairs(icons) do
+                    ApplyPressedOverlayState(icon, barData)
+                end
+            end
+        end
+    end
+end
+
+local function InstallActionPressHooks()
+    if _actionPressHooksInstalled then return end
+    _actionPressHooksInstalled = true
+
+    if ActionButtonDown then
+        hooksecurefunc("ActionButtonDown", function(buttonID)
+            local btn = buttonID and _G["ActionButton" .. tostring(buttonID)]
+            local slot = btn and btn.action or buttonID
+            ApplyPressedActionSlot(slot, true)
+        end)
+    end
+    if ActionButtonUp then
+        hooksecurefunc("ActionButtonUp", function(buttonID)
+            local btn = buttonID and _G["ActionButton" .. tostring(buttonID)]
+            local slot = btn and btn.action or buttonID
+            ApplyPressedActionSlot(slot, false)
+        end)
+    end
+    if MultiActionButtonDown then
+        hooksecurefunc("MultiActionButtonDown", function(barName, buttonID)
+            local btn = ResolveMultiActionButton(barName, buttonID)
+            local slot = btn and btn.action
+            ApplyPressedActionSlot(slot, true)
+        end)
+    end
+    if MultiActionButtonUp then
+        hooksecurefunc("MultiActionButtonUp", function(barName, buttonID)
+            local btn = ResolveMultiActionButton(barName, buttonID)
+            local slot = btn and btn.action
+            ApplyPressedActionSlot(slot, false)
+        end)
+    end
+end
+
+local function InstallActionMouseHooks()
+    for _, prefix in ipairs(ACTION_BUTTON_PREFIXES) do
+        for idx = 1, 12 do
+            local btn = _G[prefix .. idx]
+            if btn and not _actionMouseHooksInstalled[btn] then
+                _actionMouseHooksInstalled[btn] = true
+                btn:HookScript("OnMouseDown", function(self)
+                    ApplyPressedActionSlot(self and self.action, true)
+                end)
+                btn:HookScript("OnMouseUp", function(self)
+                    ApplyPressedActionSlot(self and self.action, false)
+                end)
+            end
+        end
+    end
+end
+
+do
+    local resetFrame = CreateFrame("Frame")
+    resetFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+    resetFrame:RegisterEvent("UPDATE_BINDINGS")
+    resetFrame:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
+    resetFrame:RegisterEvent("UPDATE_BONUS_ACTIONBAR")
+    resetFrame:RegisterEvent("UPDATE_SHAPESHIFT_FORM")
+    resetFrame:SetScript("OnEvent", ClearPressedActionState)
+end
+
+-------------------------------------------------------------------------------
 --  Side-Effect Caches (consumed by options, spell picker, bar glows)
 -------------------------------------------------------------------------------
 local _activeCache      = {}
@@ -515,6 +757,13 @@ local function DecorateFrame(frame, barData)
         go:SetAlpha(0)
         go:EnableMouse(false)
         fd.glowOverlay = go
+    end
+
+    if not fd.pressOverlay then
+        local po = frame:CreateTexture(nil, "OVERLAY", nil, 1)
+        po:SetAllPoints(frame)
+        po:Hide()
+        fd.pressOverlay = po
     end
 
     if not fd.textOverlay then
@@ -1483,6 +1732,7 @@ local function CollectAndReanchor()
 
     if ns.UpdateOverlayVisuals then ns.UpdateOverlayVisuals() end
     ns.RefreshAllOverlays()
+    if ns.RefreshPressedOverlays then ns.RefreshPressedOverlays() end
     MemDelta("ProcessBars")
     MemReport()
 end
@@ -2029,6 +2279,8 @@ function ns.SetupViewerHooks()
                                     end
                                 end
 
+                                ApplyPressedOverlayState(frame, bd)
+
                                 -- Active state animation (CD/utility only, polled).
                                 -- Detection uses cooldownSwipeColor:
                                 -- Blizzard sets a non-zero red channel when a spell
@@ -2091,6 +2343,11 @@ function ns.SetupViewerHooks()
             MemDelta("BuffTicker")
         end)
     end
+
+    InstallActionPressHooks()
+    InstallActionMouseHooks()
+    C_Timer.After(1, InstallActionMouseHooks)
+    C_Timer.After(3, InstallActionMouseHooks)
 
     ns.SyncViewerToContainer = function() end
 

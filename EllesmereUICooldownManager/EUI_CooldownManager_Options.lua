@@ -7387,6 +7387,16 @@ initFrame:SetScript("OnEvent", function(self)
             end
         end
 
+        local PRESS_OVERLAY_VALUES = {
+            [0] = "None",
+            [1] = "Light",
+            [2] = "Medium",
+            [3] = "Strong",
+            [4] = "Solid",
+            [5] = "Border",
+        }
+        local PRESS_OVERLAY_ORDER = { 0, 1, 2, 3, 4, 5 }
+
         -- Row 1: Icon Scale | Active Animation (or Buff Glow for buff bars)
         local scaleAnimRow
         if isBuffBar then
@@ -8069,6 +8079,129 @@ initFrame:SetScript("OnEvent", function(self)
                     kbSwatch:SetAlpha(on and 1 or 0.3)
                     if on then swatchBlock:Hide() else swatchBlock:Show() end
                 end)
+            end
+        end
+
+        -- Press Overlay
+        do
+            local function PressOverlayOff()
+                return (tonumber(BD().pressOverlayType) or 2) == 0
+            end
+
+            local pressRow
+            pressRow, h = W:DualRow(parent, y,
+                { type="dropdown", text="Press Overlay",
+                  values=PRESS_OVERLAY_VALUES, order=PRESS_OVERLAY_ORDER,
+                  getValue=function()
+                      local v = BD().pressOverlayType
+                      if v == nil then return 2 end
+                      return tonumber(v) or 2
+                  end,
+                  setValue=function(v)
+                      BD().pressOverlayType = tonumber(v) or 0
+                      ns.RefreshCDMIconAppearance(BD().key)
+                      if ns.RefreshPressedOverlays then ns.RefreshPressedOverlays() end
+                      Refresh(); UpdateCDMPreview(); EllesmereUI:RefreshPage()
+                  end,
+                  tooltip="Show a pressed-state overlay on matching CDM icons while the action button is held" },
+                { type="slider", text="Press Opacity",
+                  min=0.05, max=1, step=0.05,
+                  disabled=PressOverlayOff,
+                  disabledTooltip="Enable Press Overlay",
+                  getValue=function() return BD().pressOverlayAlpha or 0.9 end,
+                  setValue=function(v)
+                      BD().pressOverlayAlpha = v
+                      ns.RefreshCDMIconAppearance(BD().key)
+                      if ns.RefreshPressedOverlays then ns.RefreshPressedOverlays() end
+                      Refresh(); UpdateCDMPreview()
+                  end,
+                  tooltip="Opacity used by the pressed overlay" });  y = y - h
+
+            do
+                local leftRgn = pressRow._leftRegion
+                local ctrl = leftRgn and leftRgn._control
+                if ctrl and EllesmereUI.BuildColorSwatch then
+                    local classSwatch, updateClassSwatch = EllesmereUI.BuildColorSwatch(
+                        leftRgn, pressRow:GetFrameLevel() + 3,
+                        function()
+                            local _, classFile = UnitClass("player")
+                            local cc = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
+                            if cc then return cc.r, cc.g, cc.b end
+                            return 0.973, 0.839, 0.604
+                        end,
+                        function() end,
+                        false, 20)
+                    PP.Point(classSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
+                    classSwatch:SetScript("OnClick", function()
+                        if PressOverlayOff() then return end
+                        BD().pressOverlayClassColor = true
+                        ns.RefreshCDMIconAppearance(BD().key)
+                        if ns.RefreshPressedOverlays then ns.RefreshPressedOverlays() end
+                        Refresh(); EllesmereUI:RefreshPage()
+                    end)
+                    classSwatch:SetScript("OnEnter", function()
+                        EllesmereUI.ShowWidgetTooltip(classSwatch, "Class Colored")
+                    end)
+                    classSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+                    local pressSwatch, updatePressSwatch = EllesmereUI.BuildColorSwatch(
+                        leftRgn, pressRow:GetFrameLevel() + 3,
+                        function() return BD().pressOverlayR or 0.973, BD().pressOverlayG or 0.839, BD().pressOverlayB or 0.604 end,
+                        function(r, g, b)
+                            BD().pressOverlayR = r
+                            BD().pressOverlayG = g
+                            BD().pressOverlayB = b
+                            ns.RefreshCDMIconAppearance(BD().key)
+                            if ns.RefreshPressedOverlays then ns.RefreshPressedOverlays() end
+                            Refresh(); UpdateCDMPreview()
+                        end,
+                        false, 20)
+                    PP.Point(pressSwatch, "RIGHT", classSwatch, "LEFT", -8, 0)
+                    pressSwatch:SetScript("OnEnter", function()
+                        EllesmereUI.ShowWidgetTooltip(pressSwatch, "Custom Colored")
+                    end)
+                    pressSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+                    local pressSwatchBlock = CreateFrame("Button", nil, pressSwatch)
+                    pressSwatchBlock:SetAllPoints()
+                    pressSwatchBlock:SetFrameLevel(pressSwatch:GetFrameLevel() + 10)
+                    pressSwatchBlock:EnableMouse(true)
+                    pressSwatchBlock:SetScript("OnClick", function()
+                        if not PressOverlayOff() and BD().pressOverlayClassColor then
+                            BD().pressOverlayClassColor = false
+                            ns.RefreshCDMIconAppearance(BD().key)
+                            if ns.RefreshPressedOverlays then ns.RefreshPressedOverlays() end
+                            Refresh(); EllesmereUI:RefreshPage()
+                        end
+                    end)
+                    pressSwatchBlock:SetScript("OnEnter", function()
+                        local reason
+                        if PressOverlayOff() then
+                            reason = "This option requires a press overlay to be selected"
+                        else
+                            reason = "Color is controlled by class color"
+                        end
+                        EllesmereUI.ShowWidgetTooltip(pressSwatch, EllesmereUI.DisabledTooltip(reason))
+                    end)
+                    pressSwatchBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+                    local function UpdatePressSwatchState()
+                        if updatePressSwatch then updatePressSwatch() end
+                        if updateClassSwatch then updateClassSwatch() end
+                        local off = PressOverlayOff()
+                        local useClass = BD().pressOverlayClassColor
+                        classSwatch:SetAlpha((not off and useClass) and 1 or 0.3)
+                        if off or useClass then
+                            pressSwatch:SetAlpha(0.3)
+                            pressSwatchBlock:Show()
+                        else
+                            pressSwatch:SetAlpha(1)
+                            pressSwatchBlock:Hide()
+                        end
+                    end
+                    EllesmereUI.RegisterWidgetRefresh(UpdatePressSwatchState)
+                    UpdatePressSwatchState()
+                end
             end
         end
 
